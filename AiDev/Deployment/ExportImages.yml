@@ -1,0 +1,178 @@
+trigger:
+  - none
+
+pool:
+  name: 'Default'
+
+parameters:
+  - name: export_ai_worker
+    displayName: 'Export chargoon-ai-worker'
+    type: boolean
+    default: true
+
+  - name: export_referral
+    displayName: 'Export referral'
+    type: boolean
+    default: true
+
+  - name: export_synchronization
+    displayName: 'Export synchronization'
+    type: boolean
+    default: true
+
+  - name: export_ocr_app
+    displayName: 'Export ocr_app'
+    type: boolean
+    default: true
+
+  - name: export_ocr_web_ui
+    displayName: 'Export ocr_web_ui'
+    type: boolean
+    default: true
+
+  - name: export_n8n
+    displayName: 'Export n8n'
+    type: boolean
+    default: false
+
+  - name: export_qdrant
+    displayName: 'Export qdrant'
+    type: boolean
+    default: false
+
+  - name: export_redis
+    displayName: 'Export redis'
+    type: boolean
+    default: false
+
+  - name: export_redisinsight
+    displayName: 'Export redisinsight'
+    type: boolean
+    default: false
+
+  - name: export_mongo
+    displayName: 'Export mongo'
+    type: boolean
+    default: false
+
+  - name: export_ollama
+    displayName: 'Export ollama'
+    type: boolean
+    default: false
+
+  - name: export_open_webui
+    displayName: 'Export open-webui'
+    type: boolean
+    default: false
+
+
+steps:
+
+- ${{ if eq(parameters.export_ai_worker, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/chargoon-ai-worker:latest'
+      tarFileName: 'ai-worker.tar'
+
+- ${{ if eq(parameters.export_ocr_app, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/ocr_app:latest'
+      tarFileName: 'ocr_app.tar'
+
+- ${{ if eq(parameters.export_ocr_web_ui, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/ocr_web_ui:latest'
+      tarFileName: 'ocr_web_ui.tar'
+
+- ${{ if eq(parameters.export_ollama, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/ollama:0.13.2'
+      tarFileName: 'ollama-0-13-2.tar'
+
+- ${{ if eq(parameters.export_open_webui, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/open-webui:0.6.22'
+      tarFileName: 'open-webui-0-6-22.tar'
+
+- ${{ if eq(parameters.export_n8n, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/n8n:2.1.5'
+      tarFileName: 'n8n-2-1-5.tar'
+
+- ${{ if eq(parameters.export_qdrant, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/qdrant:1.14.1'
+      tarFileName: 'qdrant-1-14-1.tar'
+
+- ${{ if eq(parameters.export_redis, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/redis:8.0.3'
+      tarFileName: 'redis-8-0-3.tar'
+
+- ${{ if eq(parameters.export_redisinsight, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/redisinsight:2.70.1'
+      tarFileName: 'redisinsight-2-70-1.tar'
+
+- ${{ if eq(parameters.export_mongo, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/mongo:6.0'
+      tarFileName: 'mongo-6-0.tar'
+
+- ${{ if eq(parameters.export_referral, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/chargoon-ai-referral:latest'
+      tarFileName: 'chargoon-ai-referral.tar'
+
+- ${{ if eq(parameters.export_synchronization, true) }}:
+  - template: templates/ExportImage.yml
+    parameters:
+      sshEndpoint: 'ai-deployment-linux'
+      imageName: 'devops.chargoon.net:8083/ai/chargoon-ai-synchronization:latest'
+      tarFileName: 'chargoon-ai-synchronization.tar'
+
+
+- template: templates/ExportN8NWorkflow.yml
+  parameters:
+    sshEndpoint: 'ai stage'
+    n8nContainer: 'chatbot-n8n'
+
+    workflows:
+      - workflowName: 'Chatbot-online-master'
+        fileName: 'Chatbot-online-master.json'
+
+      - workflowName: 'Chatbot-offline-light-master'
+        fileName: 'Chatbot-offline-light-master.json'
+
+      - workflowName: 'Chatbot-offline-heavy-master'
+        fileName: 'Chatbot-offline-heavy-master.json'
+
+      - workflowName: 'Letter-response-master'
+        fileName: 'Letter-response-master.json'
+
+      - workflowName: 'Summarizer-master'
+        fileName: 'Summarizer-master.json'
+
+      - workflowName: 'Chaarbot-master'
+        fileName: 'Chaarbot_master.json'

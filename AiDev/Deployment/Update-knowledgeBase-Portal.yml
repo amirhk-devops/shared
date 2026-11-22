@@ -1,0 +1,9 @@
+trigger:
+  - none
+
+pool:
+  name: 'Default'
+
+steps:
+
+- template: templates/deploy-knowledgebase-template.yml

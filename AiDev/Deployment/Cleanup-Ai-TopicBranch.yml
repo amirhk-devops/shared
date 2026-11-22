@@ -1,0 +1,105 @@
+trigger: none
+
+resources:
+  webhooks:
+    - webhook: PRCompleted
+      connection: PRCompletedIncoming
+      filters:
+        - path: eventType
+          value: git.pullrequest.merged
+        - path: resource.status
+          value: completed
+        - path: resource.mergeStatus
+          value: succeeded
+        - path: resource.targetRefName
+          value: refs/heads/master
+
+variables:
+  BRANCH_NAME: ${{ replace(parameters.PRCompleted.resource.sourceRefName, 'refs/heads/', '') }}
+
+pool:
+  name: 'Default'
+
+steps:
+
+- script: |
+    echo "Event Type: ${{ parameters.PRCompleted.eventType }}"
+    echo "PR CREATED BY NAME: ${{ parameters.PRCompleted.resource.createdBy.displayName }}"
+    echo "Source Ref: ${{ parameters.PRCompleted.resource.sourceRefName }}"
+    echo "Target Ref: ${{ parameters.PRCompleted.resource.targetRefName }}"
+    echo "Merge Status: ${{ parameters.PRCompleted.resource.mergeStatus }}"
+  displayName: 'Debug Webhook Payload'
+  
+- task: SSH@0
+  displayName: 'Cleanup Ai TopicBranch $(BRANCH_NAME)'
+  condition: and(succeeded(), ne(variables['BRANCH_NAME'], ''), ne(variables['BRANCH_NAME'], 'master'))
+  inputs:
+    sshEndpoint: 'ai stage'
+    runOptions: 'inline'
+    inline: |
+      set -euo pipefail
+      
+      BRANCH_NAME="$(BRANCH_NAME)"
+      BRANCH_NAME_CLEAN="${BRANCH_NAME//\//-}"
+      CLEANUP_PATH="/opt/chargoon/ai-engine/$BRANCH_NAME_CLEAN"
+      PR_CREATED_BY_NAME="${{ parameters.PRCompleted.resource.createdBy.displayName }}"
+      echo "##vso[task.setvariable variable=PR_CREATED_BY_NAME]$PR_CREATED_BY_NAME"
+      CLEANUP_DONE=false
+      echo "##vso[task.setvariable variable=CLEANUP_DONE]$CLEANUP_DONE"
+
+      echo "Cleaning up branch: $BRANCH_NAME_CLEAN"
+      echo "Cleanup path: $CLEANUP_PATH"
+
+      if [[ ! -d "$CLEANUP_PATH" ]]; then
+          echo "Cleanup path does not exist: $CLEANUP_PATH"
+          exit 0
+      fi
+
+      cd "$CLEANUP_PATH"
+
+      docker compose -f docker-compose.yml down 2>&1
+      docker compose -f docker-compose-messagebus.yml down 2>&1
+      docker compose -f docker-compose-referral.yml down 2>&1
+
+      docker rmi -f devops.chargoon.net:8083/ai/chargoon-ai-worker:$BRANCH_NAME_CLEAN 2>&1
+      docker rmi -f devops.chargoon.net:8083/ai/message-bus-api:$BRANCH_NAME_CLEAN 2>&1
+      docker rmi -f devops.chargoon.net:8083/ai/chargoon-ai-referral:$BRANCH_NAME_CLEAN 2>&1
+      docker rmi -f devops.chargoon.net:8083/ai/chargoon-ai-synchronization:$BRANCH_NAME_CLEAN 2>&1
+      docker rmi -f devops.chargoon.net:8083/ai/chargoon-ai-control-panel:$BRANCH_NAME_CLEAN 2>&1
+
+      cd ..
+
+      rm -rf -- "$CLEANUP_PATH"
+      echo "Cleanup path $CLEANUP_PATH Completed."
+      CLEANUP_DONE=true
+      echo "##vso[task.setvariable variable=CLEANUP_DONE]$CLEANUP_DONE"
+
+- script: |
+    echo "Invalid Branch Name $(BRANCH_NAME)!"
+  displayName: 'Invalid Branch Name Message'
+  condition: or(eq(variables['BRANCH_NAME'], ''), eq(variables['BRANCH_NAME'], 'master'))
+
+- task: SSH@0
+  displayName: 'Send MatterMost Message'
+  condition: and(succeeded(), eq(variables['CLEANUP_DONE'], 'true'))
+  inputs:
+    sshEndpoint: 'ai-deployment-linux'
+    runOptions: 'inline'
+    inline: |
+      set -euo pipefail
+      cd /opt/chargoon/_DevOps-Workspace/
+      chmod +x MatterMostSendMSG.sh
+      
+      BRANCH_NAME="$(BRANCH_NAME)"
+      PR_CREATED_BY_NAME='$(PR_CREATED_BY_NAME)'
+
+      export MESSAGE
+      export CHANNEL_IDS="xisydmqu4pyk7bza3j38aed3ka"
+
+      MESSAGE="پول ریکوئست برنچ ${BRANCH_NAME} برای ${PR_CREATED_BY_NAME} تکمیل شد و اطلاعاتش هم از روی سرور استیج حذف شد."
+
+      export MESSAGE
+
+      echo "========== CALL SCRIPT =========="
+
+      ./MatterMostSendMSG.sh $MESSAGE $CHANNEL_IDS

@@ -1,0 +1,142 @@
+
+parameters:
+- name: AppcsPackDir
+  type: string
+
+- name: RootDir
+  type: string
+
+- name: AiDir
+  type: string
+
+- name: DeployDir
+  type: string
+
+- name: SshEndpoint
+  type: string
+  default: 'ai-deployment-linux'
+
+steps:
+- task: SSH@0
+  displayName: 'Deploy AI'
+  inputs:
+    sshEndpoint: '${{ parameters.SshEndpoint }}'
+    runOptions: 'inline'
+    inline: |
+      set -Eeuo pipefail
+
+      echo "SSH user: $(whoami)"
+      echo "Current UID: $EUID"
+
+      APPCS_PACK_DIR="${{ parameters.AppcsPackDir }}"
+      ROOT_DIR="${{ parameters.RootDir }}"
+      AI_DIR="${{ parameters.AiDir }}"
+      DEPLOY_DIR="${{ parameters.DeployDir }}"
+      BOOTSTRAP="$DEPLOY_DIR/deploy-ai-bootstrap.sh"
+
+      echo "##vso[task.setvariable variable=AI_DIR]$AI_DIR"
+
+      # Create deployment directory
+      mkdir -p "$DEPLOY_DIR"
+
+      # Copy bootstrap script
+      cp -f "$APPCS_PACK_DIR/deploy-ai-bootstrap.sh" "$BOOTSTRAP"
+
+      # Make executable
+      chmod +x "$BOOTSTRAP"
+
+      # Execute bootstrap
+      IMAGE_SOURCE=registry bash "$BOOTSTRAP" \
+        --root "$ROOT_DIR" \
+        --ai-dir "$AI_DIR" \
+        --deploy-dir "$DEPLOY_DIR" \
+        --start-all-compose true
+
+      cd "$AI_DIR"
+
+      show_compose_services() {
+          docker compose ps --format json |
+          jq -r '
+              (if type == "array" then .[] else . end)
+              | [
+                  .Service // .Name // "-",
+                  .State // "-",
+                  (
+                      [
+                          .Publishers[]?
+                          | select(.PublishedPort != null and .PublishedPort != 0)
+                          | "\(.PublishedPort) -> \(.TargetPort // "-")/\(.Protocol // "tcp")"
+                      ]
+                      | unique
+                      | join(", ")
+                  )
+              ]
+              | select(.[2] != "")
+              | @tsv
+          '
+      }
+
+      services=$(show_compose_services)
+
+      if [[ -n "$services" ]]; then
+          printf '%s\n' "$services" |
+          awk -F '\t' '
+              BEGIN {
+                  service_width = length("SERVICE")
+                  status_width = length("STATUS")
+                  ports_width = length("EXPOSED PORTS")
+              }
+
+              {
+                  if (length($1) > service_width) service_width = length($1)
+                  if (length($2) > status_width) status_width = length($2)
+                  if (length($3) > ports_width) ports_width = length($3)
+                  rows[NR] = $0
+              }
+
+              END {
+                  border = "+"
+                  for (i = 0; i < service_width + 2; i++) border = border "-"
+                  border = border "+"
+                  for (i = 0; i < status_width + 2; i++) border = border "-"
+                  border = border "+"
+                  for (i = 0; i < ports_width + 2; i++) border = border "-"
+                  border = border "+"
+
+                  print border
+                  printf "| %-*s | %-*s | %-*s |\n", service_width, "SERVICE", status_width, "STATUS", ports_width, "EXPOSED PORTS"
+                  print border
+
+                  for (i = 1; i <= NR; i++) {
+                      split(rows[i], fields, "\t")
+                      printf "| %-*s | %-*s | %-*s |\n", service_width, fields[1], status_width, fields[2], ports_width, fields[3]
+                  }
+
+                  print border
+              }
+          '
+      else
+          echo "No services with exposed ports found."
+      fi
+
+      AI_WORKER_PORT=$(
+          docker compose ps --format json |
+          jq -r '
+              (if type == "array" then .[] else . end)
+              | select(.Service == "ai-engine-ai-worker")
+              | .Publishers[]?
+              | select(.PublishedPort != null and .PublishedPort != 0)
+              | .PublishedPort
+          ' | head -n 1
+      )
+
+      if [[ -z "$AI_WORKER_PORT" ]]; then
+          echo "ERROR: Could not find exposed port for ai-engine-ai-worker"
+          exit 1
+      fi
+
+      AI_WORKER_URL="http://localhost:$AI_WORKER_PORT"
+
+      echo "AI_WORKER_URL=http://172.16.0.124:$AI_WORKER_PORT"
+
+      echo "##vso[task.setvariable variable=AI_WORKER_URL]$AI_WORKER_URL"

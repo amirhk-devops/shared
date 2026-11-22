@@ -1,0 +1,23 @@
+trigger:
+  - none
+
+pool:
+  name: 'Default'
+
+steps:
+
+- template: templates/Build-Ai-Template.yml
+  parameters:
+    branchName: master
+    generatePack: true
+
+
+- template: templates/Deploy-AI-Template.yml
+  parameters:
+    AppcsPackDir: '/mnt/appcs-didgahinstallation/AI-Installation'
+    RootDir: '/opt/chargoon'
+    AiDir: '/opt/chargoon/asa-portal'
+    DeployDir: '/opt/chargoon/asa-portal-ai-deploy'
+    SshEndpoint: 'ai-deployment-linux'
+
+

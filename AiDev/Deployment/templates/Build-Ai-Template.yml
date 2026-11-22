@@ -1,0 +1,422 @@
+parameters:
+- name: branchName
+  type: string
+  default: ''
+
+- name: generatePack
+  type: string
+  default: 'false'
+
+steps:
+- task: SSH@0
+  displayName: 'Build AI Images'
+  inputs:
+    sshEndpoint: 'ai stage'
+    runOptions: 'inline'
+    inline: |
+      set -euo pipefail
+
+      export BUILD_SOURCEBRANCH="$(Build.SourceBranch)"
+      export TEMPLATE_BRANCH="${{ parameters.branchName }}"
+
+      echo "=== Identity ==="
+      whoami
+      id
+
+      TODAY=$(date +%Y%m%d)
+
+      # --------------------------------------------------
+      # Resolve Branch
+      # --------------------------------------------------
+      if [ -n "$TEMPLATE_BRANCH" ]; then
+        BRANCH="$TEMPLATE_BRANCH"
+        echo "Branch resolved from template parameter"
+      else
+        if [ -z "$BUILD_SOURCEBRANCH" ]; then
+          echo "ERROR: BUILD_SOURCEBRANCH is empty"
+          exit 1
+        fi
+
+        echo "BUILD_SOURCEBRANCH=$BUILD_SOURCEBRANCH"
+        BRANCH="${BUILD_SOURCEBRANCH#refs/heads/}"
+        echo "Branch resolved from pipeline"
+      fi
+
+      echo "Resolved branch: $BRANCH"
+
+
+      # --------------------------------------------------
+      # Paths
+      # --------------------------------------------------
+      if [ "$BRANCH" = "master" ]; then      
+        GIT_DIR="/opt/chargoon/ai-engine/master_aiengine/ai-engine-git"
+        RUNTIME_DIR="/opt/chargoon/ai-engine/master_aiengine"
+      else
+        SAFE_BRANCH=$(echo "$BRANCH" | tr '/' '-')
+        BASE_DIR="/opt/chargoon/ai-engine/${SAFE_BRANCH}"
+        GIT_DIR="$BASE_DIR/ai-engine-git"
+        RUNTIME_DIR="$BASE_DIR"
+      fi
+
+
+      # --------------------------------------------------
+      # Clone or update git directory
+      # --------------------------------------------------
+      REPO_SSH_URL="ssh://devserver.chargoon.net:22/tfs/DefaultCollection/Chargoon.Didgah/_git/AiDev"
+
+      rm -rf -- "$GIT_DIR"
+      mkdir -p "$GIT_DIR" "$RUNTIME_DIR"
+
+      if [ ! -d "$GIT_DIR/.git" ]; then
+        echo "Cloning repository into $GIT_DIR"
+        git clone -b "$BRANCH" "$REPO_SSH_URL" "$GIT_DIR" 2>&1
+      else
+        echo "Updating repository in $GIT_DIR"
+        cd "$GIT_DIR"
+        git fetch origin 2>&1
+        git checkout "$BRANCH" 2>&1
+        git reset --hard "origin/$BRANCH" 2>&1
+      fi
+
+      cp $GIT_DIR/Deployment/deploy-ai.sh "$RUNTIME_DIR/deploy-ai.sh"
+
+      cd "$GIT_DIR"
+
+
+      # --------------------------------------------------
+      # Image tag
+      # --------------------------------------------------
+      if [ "$BRANCH" = "master" ]; then
+        IMAGE_TAG="master"
+      else
+        IMAGE_TAG=${SAFE_BRANCH}
+      fi
+
+      LATEST_TAG="latest"
+
+      export IMAGE_TAG
+
+      echo "IMAGE_TAG=$IMAGE_TAG"
+
+
+      # --------------------------------------------------
+      # Sync code
+      # --------------------------------------------------
+      SRC_DIR="$GIT_DIR/chargoon-project-main"
+      DST_DIR="$RUNTIME_DIR"
+
+      rsync -r \
+        --checksum \
+        --no-owner --no-group --no-times --no-perms \
+        --exclude="config.json" \
+        --exclude=".env" \
+        "$SRC_DIR/" "$DST_DIR/" 2>&1
+
+
+      # --------------------------------------------------
+      # Build Ai-Worker
+      # --------------------------------------------------
+      cd "$DST_DIR/ai-worker"
+
+      docker build \
+        --label "chargoon.version=${TODAY}" \
+        -t devops.chargoon.net:8083/ai/chargoon-ai-worker:${IMAGE_TAG} \
+        . 2>&1
+
+
+      # --------------------------------------------------
+      # Build message_bus Image
+      # --------------------------------------------------
+      cd "$DST_DIR/message_bus"
+
+      docker build \
+        --label "chargoon.version=${TODAY}" \
+        -t devops.chargoon.net:8083/ai/message-bus-api:${IMAGE_TAG} \
+        . 2>&1
+      
+      # --------------------------------------------------
+      # Build Referral Image
+      # --------------------------------------------------
+      cd "$DST_DIR/referral_machine"
+
+      docker build \
+        --label "chargoon.version=${TODAY}" \
+        -t devops.chargoon.net:8083/ai/chargoon-ai-referral:${IMAGE_TAG} \
+        . 2>&1
+
+      # --------------------------------------------------
+      # Build Synchronization Image
+      # --------------------------------------------------
+      cd "$DST_DIR/synchronization"
+
+      docker build \
+        --label "chargoon.version=${TODAY}" \
+        -t devops.chargoon.net:8083/ai/chargoon-ai-synchronization:${IMAGE_TAG} \
+        . 2>&1
+        
+      # --------------------------------------------------
+      # Build Control Panel Image
+      # --------------------------------------------------
+      cd "$DST_DIR/control_panel"
+
+      docker build \
+        --label "chargoon.version=${TODAY}" \
+        -t devops.chargoon.net:8083/ai/chargoon-ai-control-panel:${IMAGE_TAG} \
+        . 2>&1
+
+      # --------------------------------------------------
+      # Generate Pack
+      # --------------------------------------------------
+
+      if [ "${{ parameters.generatePack }}" = "true" ]; then
+
+        echo "=========================================="
+        echo "GENERATING CUSTOMER PACK"
+        echo "=========================================="
+
+
+        DEPLOY_DIR="/opt/chargoon/_deployment"
+        PACK_DIR="$DEPLOY_DIR/packs/$TODAY"
+        SOURCE="$GIT_DIR/chargoon-project-main"
+
+        PACKAGE_IMAGE="devops.chargoon.net:8083/ai/chargoon-deployment-package:${TODAY}"
+        PACKAGE_TAR="$PACK_DIR/chargoon-ai-package-${TODAY}.tar"
+
+        # --------------------------------------------------
+        # Prepare Pack Directory
+        # --------------------------------------------------
+
+        rm -rf -- "$PACK_DIR"
+        mkdir -p "$PACK_DIR/configs"
+        mkdir -p "$PACK_DIR/volumes"
+
+        # --------------------------------------------------
+        # Release Version
+        # --------------------------------------------------
+
+        echo "$TODAY" > "$PACK_DIR/.release-version"
+
+        # --------------------------------------------------
+        # Copy Deployment Files
+        # --------------------------------------------------
+
+        cp "$GIT_DIR/Deployment/deploy-ai-for-customer.sh" \
+           "$PACK_DIR/deploy-ai-for-customer.sh"
+
+        cp "$SOURCE/.env.example" \
+           "$PACK_DIR/.env"
+
+        # --------------------------------------------------
+        # Copy Config Files
+        # --------------------------------------------------
+
+        copy_config() {
+          local SRC="$1"
+          local DST="$2"
+
+          if [ -f "$SRC" ]; then
+            cp "$SRC" "$DST"
+            echo "Config copied: $SRC -> $DST"
+          else
+            echo "ERROR: Config file not found: $SRC"
+            exit 1
+          fi
+        }
+
+        copy_config "$SOURCE/synchronization/config.json" \
+                    "$PACK_DIR/configs/synchronization.config.json"
+
+        copy_config "$SOURCE/referral_machine/config.referral.json" \
+                    "$PACK_DIR/configs/referral.config.json"
+
+        copy_config "$SOURCE/message_bus/src/config/mgb-88888888-8888-8888-8888-888888888888.json" \
+                    "$PACK_DIR/configs/mgb-88888888-8888-8888-8888-888888888888.json"
+
+        copy_config "$SOURCE/config.json" \
+                    "$PACK_DIR/configs/ai-engine.config.json"
+
+        # --------------------------------------------------
+        # Copy Docker Compose Files
+        # --------------------------------------------------
+
+        cp "$SOURCE/docker-compose.yml" \
+           "$PACK_DIR/docker-compose.yml"
+
+        cp "$SOURCE/docker-compose-messagebus.yml" \
+           "$PACK_DIR/docker-compose-messagebus.yml"
+
+        cp "$SOURCE/docker-compose-referral.yml" \
+           "$PACK_DIR/docker-compose-referral.yml"
+
+        cp "$SOURCE/docker-compose-control-panel.yml" \
+           "$PACK_DIR/docker-compose-control-panel.yml"
+
+        # --------------------------------------------------
+        # Copy Additional Volume Files
+        # --------------------------------------------------
+
+        # Add required initial volume files here.
+        # Example:
+        #
+        mkdir -p "$PACK_DIR/volumes/referral-api/models"
+
+        cp -a "$DEPLOY_DIR/paraphrase-multilingual-MiniLM-L12-v2" \
+              "$PACK_DIR/volumes/referral-api/models/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+        # --------------------------------------------------
+        # Build Package Image
+        # --------------------------------------------------
+
+        echo "Building deployment package image..."
+
+        PACKAGE_BUILD_DIR="$(mktemp -d)"
+        trap 'rm -rf -- "$PACKAGE_BUILD_DIR"' EXIT
+
+        # Compress package content
+        tar -czf "$PACKAGE_BUILD_DIR/package.tar.gz" \
+            -C "$PACK_DIR" .
+
+        # --------------------------------------------------
+        # Package Dockerfile devops.chargoon.net:8083/alpine:3.22
+        # --------------------------------------------------
+
+        printf '%s\n' \
+          'FROM devops.chargoon.net:8083/alpine:3.22' \
+          'LABEL org.opencontainers.image.title="Chargoon Deployment Package"' \
+          'WORKDIR /package' \
+          'COPY package.tar.gz /package/package.tar.gz' \
+          'CMD ["sleep", "infinity"]' \
+          > "$PACKAGE_BUILD_DIR/Dockerfile"
+
+        # --------------------------------------------------
+        # Build Package Image
+        # --------------------------------------------------
+
+        docker build \
+          --progress=plain \
+          --no-cache \
+          --pull=false \
+          --label "chargoon.version=${TODAY}" \
+          -t "$PACKAGE_IMAGE" \
+          "$PACKAGE_BUILD_DIR" 2>&1
+
+        BUILD_EXIT_CODE=$?
+
+        if [ "$BUILD_EXIT_CODE" -ne 0 ]; then
+            echo "ERROR: Package Docker image build failed."
+            exit "$BUILD_EXIT_CODE"
+        fi
+
+        # --------------------------------------------------
+        # Export Package Image
+        # --------------------------------------------------
+
+        echo "Exporting package image..."
+
+        # docker save \
+        #   -o "$PACKAGE_TAR" \
+        #   "$PACKAGE_IMAGE"
+
+        # --------------------------------------------------
+        # Tag Images as Latest
+        # --------------------------------------------------
+
+        echo "Tagging images as latest"
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/message-bus-api:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/message-bus-api:${LATEST_TAG}" 2>&1
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-ai-worker:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/chargoon-ai-worker:${LATEST_TAG}" 2>&1
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-ai-synchronization:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/chargoon-ai-synchronization:${LATEST_TAG}" 2>&1
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-ai-referral:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/chargoon-ai-referral:${LATEST_TAG}" 2>&1
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-ai-control-panel:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/chargoon-ai-control-panel:${LATEST_TAG}" 2>&1
+
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/message-bus-api:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/message-bus-api:${TODAY}" 2>&1
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-ai-worker:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/chargoon-ai-worker:${TODAY}" 2>&1
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-ai-synchronization:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/chargoon-ai-synchronization:${TODAY}" 2>&1
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-ai-referral:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/chargoon-ai-referral:${TODAY}" 2>&1
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-ai-control-panel:${IMAGE_TAG}" \
+          "devops.chargoon.net:8083/ai/chargoon-ai-control-panel:${TODAY}" 2>&1
+
+
+        docker tag \
+          "devops.chargoon.net:8083/ai/chargoon-deployment-package:${TODAY}" \
+          "devops.chargoon.net:8083/ai/chargoon-deployment-package:${LATEST_TAG}" 2>&1
+
+        # --------------------------------------------------
+        # Push Latest Images
+        # --------------------------------------------------
+
+        echo "Pushing latest images"
+
+        docker push "devops.chargoon.net:8083/ai/message-bus-api:${LATEST_TAG}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-ai-worker:${LATEST_TAG}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-ai-synchronization:${LATEST_TAG}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-ai-referral:${LATEST_TAG}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-ai-control-panel:${LATEST_TAG}" 2>&1
+
+        docker push "devops.chargoon.net:8083/ai/message-bus-api:${TODAY}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-ai-worker:${TODAY}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-ai-synchronization:${TODAY}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-ai-referral:${TODAY}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-ai-control-panel:${TODAY}" 2>&1
+
+        docker push "devops.chargoon.net:8083/ai/chargoon-deployment-package:${TODAY}" 2>&1
+        docker push "devops.chargoon.net:8083/ai/chargoon-deployment-package:${LATEST_TAG}" 2>&1
+
+
+        APPCS_PACK_DIR="/mnt/appcs-didgahinstallation/AI-Installation"
+        cp "$GIT_DIR/Deployment/deploy-ai-bootstrap.sh" \
+           "$APPCS_PACK_DIR/deploy-ai-bootstrap.sh"
+
+        # --------------------------------------------------
+        # Cleanup
+        # --------------------------------------------------
+
+        # rm -rf -- "$PACKAGE_BUILD_DIR"
+        trap - EXIT
+
+        echo "=========================================="
+        echo "CUSTOMER PACK GENERATED SUCCESSFULLY"
+        echo "=========================================="
+
+        echo "Pack directory : $PACK_DIR"
+        echo "Package image  : $PACKAGE_IMAGE"
+        echo "Package TAR    : $PACKAGE_TAR"
+        # echo "Package size   : $(du -h "$PACKAGE_TAR" | awk '{print $1}')"
+
+      else
+
+        echo "Generate Pack is disabled. Skipping."
+
+      fi
+
+
+      

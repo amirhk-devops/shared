@@ -1,0 +1,92 @@
+parameters:
+  - name: sshEndpoint
+    type: string
+
+  - name: imageName
+    type: string
+
+  - name: tarFileName
+    type: string
+
+steps:
+- task: SSH@0
+  displayName: '${{ parameters.tarFileName }} Save & Publish Docker Image'
+  inputs:
+    sshEndpoint: '${{ parameters.sshEndpoint }}'
+    runOptions: 'inline'
+    inline: |
+
+      IMAGE_NAME="${{ parameters.imageName }}"
+      TAR_FILE_NAME="${{ parameters.tarFileName }}"
+
+      LOCAL_PATH="/opt/chargoon/ai-engine-images"
+      MOUNT_PATH="/mnt/appcs-didgahinstallation"
+
+      NETWORK_SUB_PATH="AI-Installation/AIEngineImages"
+      CURRENT_DATE=$(date +%F)
+
+      TAR_FILE_PATH="$LOCAL_PATH/$TAR_FILE_NAME"
+      DESTINATION_DIR="$MOUNT_PATH/$NETWORK_SUB_PATH/$CURRENT_DATE"
+      DESTINATION_FILE="$DESTINATION_DIR/$TAR_FILE_NAME"
+      
+      echo "========================================"
+      echo "Starting Docker save and copy operation"
+      echo "Image Name : $IMAGE_NAME"
+      echo "Tar File   : $TAR_FILE_NAME"
+      echo "========================================"
+
+      mkdir -p "$LOCAL_PATH"
+
+      if [ ! -d "$MOUNT_PATH/$NETWORK_SUB_PATH" ]; then
+          echo "========================================"
+          echo "Operation failed:"
+          echo "Base network path not found: $MOUNT_PATH/$NETWORK_SUB_PATH"
+          echo "========================================"
+          exit 1
+      fi
+
+      mkdir -p "$DESTINATION_DIR"
+
+      if [ -f "$TAR_FILE_PATH" ]; then
+          echo "Existing file found. Removing: $TAR_FILE_PATH"
+          rm -f "$TAR_FILE_PATH"
+      fi
+
+      echo "Running docker save..."
+
+      docker save -o "$TAR_FILE_PATH" "$IMAGE_NAME"
+
+      if [ ! -f "$TAR_FILE_PATH" ]; then
+          echo "========================================"
+          echo "Operation failed:"
+          echo "TAR file was not created."
+          echo "========================================"
+          exit 1
+      fi
+
+      echo "TAR file created successfully: $TAR_FILE_PATH"
+
+      echo "Copying file to network path..."
+
+      cp -f "$TAR_FILE_PATH" "$DESTINATION_FILE"
+
+      if [ ! -f "$DESTINATION_FILE" ]; then
+          echo "========================================"
+          echo "Operation failed:"
+          echo "Failed to copy file to network path."
+          echo "========================================"
+          exit 1
+      fi
+
+      echo "File copied successfully."
+      echo "Destination: $DESTINATION_FILE"
+
+      echo "Removing local file..."
+
+      rm -f "$TAR_FILE_PATH"
+
+      echo "Local file removed successfully."
+
+      echo "========================================"
+      echo "Operation completed successfully."
+      echo "========================================"

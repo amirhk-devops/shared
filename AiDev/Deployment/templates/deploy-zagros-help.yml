@@ -1,0 +1,244 @@
+
+parameters:
+  - name: SshEndpoint
+    type: string
+    default: 'ai stage'
+
+  - name: BranchName
+    type: string
+    default: 'master'
+
+  - name: DeployDirectory
+    type: string
+
+  - name: RepositoryUrl
+    type: string
+    default: 'ssh://devserver.chargoon.net:22/tfs/DefaultCollection/NonProduction/_git/ZagrosHelp'
+
+  - name: RagApiBase
+    type: string
+
+  - name: DisplayName
+    type: string
+    default: 'Deploy Zagros Help and Sync RAG'
+
+
+steps:
+  - task: SSH@0
+    displayName: '${{ parameters.DisplayName }}'
+    inputs:
+      sshEndpoint: '${{ parameters.SshEndpoint }}'
+      failOnStdErr: false
+      runOptions: 'inline'
+      inline: |
+        set -euo pipefail
+
+        # --------------------------------------------------
+        # Configuration
+        # --------------------------------------------------
+
+        DST_DIR="${{ parameters.DeployDirectory }}"
+        GIT_DIR="$DST_DIR/ZagrosHelp-git"
+        SRC_DIR="$GIT_DIR/docs"
+
+        DOCS_VOLUME_DIR="$DST_DIR/volumes/ai-worker/rag_ingest"
+        TARGET_DOCS_DIR="$DOCS_VOLUME_DIR/docs"
+
+        BRANCH="${{ parameters.BranchName }}"
+        REPO_SSH_URL="${{ parameters.RepositoryUrl }}"
+
+        RAG_API_BASE="${{ parameters.RagApiBase }}"
+        RAG_SYNC_API_KEY="$(RAG_SYNC_API_KEY)"
+
+        # --------------------------------------------------
+        # Validate paths
+        # --------------------------------------------------
+
+        if [[ -z "$DST_DIR" || "$DST_DIR" == "/" ]]; then
+          echo "ERROR: Invalid deployment directory: '$DST_DIR'"
+          exit 1
+        fi
+
+        if [[ -z "$GIT_DIR" || "$GIT_DIR" == "/" ]]; then
+          echo "ERROR: Refusing to delete dangerous GIT_DIR: '$GIT_DIR'"
+          exit 1
+        fi
+
+        if [[ -z "$TARGET_DOCS_DIR" || "$TARGET_DOCS_DIR" == "/" ]]; then
+          echo "ERROR: Refusing to delete dangerous TARGET_DOCS_DIR: '$TARGET_DOCS_DIR'"
+          exit 1
+        fi
+
+        mkdir -p "$DST_DIR"
+
+        # --------------------------------------------------
+        # Clone or update repository
+        # --------------------------------------------------
+
+        if [[ ! -d "$GIT_DIR/.git" ]]; then
+
+          echo "Cloning repository into $GIT_DIR"
+
+          rm -rf -- "$GIT_DIR"
+
+          git clone -b "$BRANCH" "$REPO_SSH_URL" "$GIT_DIR" 2>&1
+
+        else
+
+          echo "Updating repository in $GIT_DIR"
+
+          cd "$GIT_DIR"
+
+          git fetch origin 2>&1
+          git checkout "$BRANCH" 2>&1
+          git reset --hard "origin/$BRANCH" 2>&1
+
+        fi
+
+        # --------------------------------------------------
+        # Validate source
+        # --------------------------------------------------
+
+        if [[ ! -d "$SRC_DIR" ]]; then
+          echo "ERROR: Source docs directory not found: $SRC_DIR"
+          exit 1
+        fi
+
+        # --------------------------------------------------
+        # Clean previous deployed docs
+        # --------------------------------------------------
+
+        echo "Removing previous docs directory: $TARGET_DOCS_DIR"
+
+        rm -rf -- "$TARGET_DOCS_DIR"
+        mkdir -p "$TARGET_DOCS_DIR"
+
+        # --------------------------------------------------
+        # Copy everything except knowledgeBase directories
+        # Preserve original directory structure
+        # --------------------------------------------------
+
+        mkdir -p "$TARGET_DOCS_DIR"
+
+        rsync -av \
+          --exclude='knowledgeBase/' \
+          "$SRC_DIR/" \
+          "$TARGET_DOCS_DIR/"
+
+        echo "----------------------------------------"
+        echo "Documentation deployment completed."
+        echo "Source:      $SRC_DIR"
+        echo "Destination: $TARGET_DOCS_DIR"
+        echo "Excluded:    All knowledgeBase directories"
+        echo "----------------------------------------"
+
+        # --------------------------------------------------
+        # Validate RAG API configuration
+        # --------------------------------------------------
+
+        if [[ -z "$RAG_SYNC_API_KEY" ]]; then
+          echo "ERROR: RAG_SYNC_API_KEY is not configured"
+          exit 1
+        fi
+
+        RAG_CURL_ARGS=(
+          --fail
+          --show-error
+          --silent
+          --connect-timeout 10
+          --max-time 120
+          --header "Accept: */*"
+          --header "X-API-Key: $RAG_SYNC_API_KEY"
+        )
+
+        # --------------------------------------------------
+        # Temporary files
+        # --------------------------------------------------
+
+        TMP_DIR="$(mktemp -d)"
+
+        cleanup() {
+          rm -rf -- "$TMP_DIR"
+        }
+
+        trap cleanup EXIT
+
+        # --------------------------------------------------
+        # 1. Trigger RAG Synchronization / Embedding
+        # --------------------------------------------------
+
+        echo ""
+        echo "=========================================="
+        echo "STARTING RAG SYNCHRONIZATION"
+        echo "=========================================="
+
+        curl "${RAG_CURL_ARGS[@]}" \
+          --request POST \
+          --connect-timeout 30 \
+          --max-time 300 \
+          "$RAG_API_BASE/rag/sync/run" \
+          --output "$TMP_DIR/rag-sync-response.json"
+
+        echo "RAG synchronization request completed."
+
+        if command -v jq >/dev/null 2>&1; then
+          jq . "$TMP_DIR/rag-sync-response.json" || cat "$TMP_DIR/rag-sync-response.json"
+        else
+          cat "$TMP_DIR/rag-sync-response.json"
+        fi
+
+        # --------------------------------------------------
+        # 2. Get RAG Volume Information
+        # --------------------------------------------------
+
+        echo ""
+        echo "=========================================="
+        echo "RAG VOLUME INFORMATION"
+        echo "=========================================="
+
+        curl "${RAG_CURL_ARGS[@]}" \
+          "$RAG_API_BASE/rag/volume" \
+          --output "$TMP_DIR/rag-volume.json"
+
+        if command -v jq >/dev/null 2>&1; then
+          jq . "$TMP_DIR/rag-volume.json" || cat "$TMP_DIR/rag-volume.json"
+        else
+          cat "$TMP_DIR/rag-volume.json"
+        fi
+
+        # --------------------------------------------------
+        # 3. Get RAG Sources
+        # --------------------------------------------------
+
+        echo ""
+        echo "=========================================="
+        echo "RAG SOURCES"
+        echo "=========================================="
+
+        curl "${RAG_CURL_ARGS[@]}" \
+          "$RAG_API_BASE/rag/sources" \
+          --output "$TMP_DIR/rag-sources.json"
+
+        if command -v jq >/dev/null 2>&1; then
+          jq . "$TMP_DIR/rag-sources.json" || cat "$TMP_DIR/rag-sources.json"
+        else
+          cat "$TMP_DIR/rag-sources.json"
+        fi
+
+         rm -rf -- "$GIT_DIR"
+
+        # --------------------------------------------------
+        # Deployment Summary
+        # --------------------------------------------------
+
+        echo ""
+        echo "=========================================="
+        echo "RAG DEPLOYMENT COMPLETED"
+        echo "=========================================="
+
+        echo "Repository:       $REPO_SSH_URL"
+        echo "Branch:           $BRANCH"
+        echo "Source:           $SRC_DIR"
+        echo "Destination:      $TARGET_DOCS_DIR"
+        echo "RAG API:          $RAG_API_BASE"
+        echo "=========================================="

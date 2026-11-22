@@ -1,0 +1,28 @@
+trigger:
+  - none
+
+pool:
+  name: 'Default'
+
+steps:
+
+- template: templates/Build-Ai-Template.yml
+  parameters:
+    branchName: master
+    generatePack: true
+
+
+- template: templates/Deploy-AI-Template.yml
+  parameters:
+    AppcsPackDir: '/mnt/appcs-didgahinstallation/AI-Installation'
+    RootDir: '/opt/chargoon'
+    AiDir: '/opt/chargoon/ai'
+    DeployDir: '/opt/chargoon/ai-deploy'
+    SshEndpoint: 'ai-deployment-linux'
+
+- template: templates/deploy-zagros-help.yml
+  parameters:
+    SshEndpoint: 'ai-deployment-linux'
+    DeployDirectory: '$(AI_DIR)'
+    RagApiBase: '$(AI_WORKER_URL)'
+

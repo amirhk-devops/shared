@@ -1,0 +1,167 @@
+trigger: none
+
+pool:
+  name: 'Default'
+
+steps:
+
+- template: templates/Build-Ai-Template.yml
+
+- task: SSH@0
+  displayName: 'Deploy & Publish Ai-Engine'
+  inputs:
+    sshEndpoint: 'ai stage'
+    runOptions: 'inline'
+    inline: |
+          set -euo pipefail
+
+          export BUILD_SOURCEBRANCH="$(Build.SourceBranch)"
+
+          echo "=== Identity ==="
+          whoami
+          id
+
+          # --------------------------------------------------
+          # Resolve Branch
+          # --------------------------------------------------
+
+          if [ -z "$BUILD_SOURCEBRANCH" ]; then
+            echo "ERROR: BUILD_SOURCEBRANCH is empty"
+            exit 1
+          fi
+
+          echo "BUILD_SOURCEBRANCH=$BUILD_SOURCEBRANCH"
+          BRANCH="${BUILD_SOURCEBRANCH#refs/heads/}"
+          echo "Branch resolved from pipeline"
+
+          echo "Resolved branch: $BRANCH"
+
+          # --------------------------------------------------
+          # Paths
+          # --------------------------------------------------
+          if [ "$BRANCH" = "master" ]; then      
+            GIT_DIR="/opt/chargoon/ai-engine/master_aiengine/ai-engine-git"
+            RUNTIME_DIR="/opt/chargoon/ai-engine/master_aiengine"
+          else
+            SAFE_BRANCH=$(echo "$BRANCH" | tr '/' '-')
+            BASE_DIR="/opt/chargoon/ai-engine/${SAFE_BRANCH}"
+            GIT_DIR="$BASE_DIR/ai-engine-git"
+            RUNTIME_DIR="$BASE_DIR"
+          fi
+
+          echo "RUNTIME_DIR=$RUNTIME_DIR"
+          echo "##vso[task.setvariable variable=RUNTIME_DIR]$RUNTIME_DIR"
+
+          # --------------------------------------------------
+          # Image tag
+          # --------------------------------------------------
+          if [ "$BRANCH" = "master" ]; then
+            IMAGE_TAG="master"
+          else
+            IMAGE_TAG=${SAFE_BRANCH}
+          fi
+
+          echo "GIT_DIR=$GIT_DIR"
+          echo "RUNTIME_DIR=$RUNTIME_DIR"
+          echo "IMAGE_TAG=$IMAGE_TAG"
+          export IMAGE_TAG
+
+          cd $RUNTIME_DIR
+          
+          chmod +x deploy-ai.sh
+          ./deploy-ai.sh "$GIT_DIR/chargoon-project-main" "$RUNTIME_DIR" "$IMAGE_TAG" "$IMAGE_TAG" $(Build.BuildId)
+
+          rm -rf -- "$GIT_DIR"
+
+          # docker compose ps 2>&1
+
+          show_compose_services() {
+              docker compose ps --format json |
+              jq -r '
+                  (if type == "array" then .[] else . end)
+                  | [
+                      .Service // .Name // "-",
+                      .State // "-",
+                      (
+                          [
+                              .Publishers[]?
+                              | select(.PublishedPort != null and .PublishedPort != 0)
+                              | "\(.PublishedPort) -> \(.TargetPort // "-")/\(.Protocol // "tcp")"
+                          ]
+                          | unique
+                          | join(", ")
+                      )
+                  ]
+                  | select(.[2] != "")
+                  | @tsv
+              '
+          }
+
+          services=$(show_compose_services)
+
+          if [[ -n "$services" ]]; then
+              printf '%s\n' "$services" |
+              awk -F '\t' '
+                  BEGIN {
+                      service_width = length("SERVICE")
+                      status_width = length("STATUS")
+                      ports_width = length("EXPOSED PORTS")
+                  }
+
+                  {
+                      if (length($1) > service_width) service_width = length($1)
+                      if (length($2) > status_width) status_width = length($2)
+                      if (length($3) > ports_width) ports_width = length($3)
+                      rows[NR] = $0
+                  }
+
+                  END {
+                      border = "+"
+                      for (i = 0; i < service_width + 2; i++) border = border "-"
+                      border = border "+"
+                      for (i = 0; i < status_width + 2; i++) border = border "-"
+                      border = border "+"
+                      for (i = 0; i < ports_width + 2; i++) border = border "-"
+                      border = border "+"
+
+                      print border
+                      printf "| %-*s | %-*s | %-*s |\n", service_width, "SERVICE", status_width, "STATUS", ports_width, "EXPOSED PORTS"
+                      print border
+
+                      for (i = 1; i <= NR; i++) {
+                          split(rows[i], fields, "\t")
+                          printf "| %-*s | %-*s | %-*s |\n", service_width, fields[1], status_width, fields[2], ports_width, fields[3]
+                      }
+
+                      print border
+                  }
+              '
+          else
+              echo "No services with exposed ports found."
+          fi
+          AI_WORKER_PORT=$(
+              docker compose ps --format json |
+              jq -r '
+                  (if type == "array" then .[] else . end)
+                  | select(.Service == "ai-engine-ai-worker")
+                  | .Publishers[]?
+                  | select(.PublishedPort != null and .PublishedPort != 0)
+                  | .PublishedPort
+              ' | head -n 1
+          )
+
+          if [[ -z "$AI_WORKER_PORT" ]]; then
+              echo "ERROR: Could not find exposed port for ai-engine-ai-worker"
+              exit 1
+          fi
+          
+          AI_WORKER_URL="http://127.0.0.1:$AI_WORKER_PORT"
+          echo "AI_WORKER_PORT=http://172.16.0.123:$AI_WORKER_PORT"
+
+          echo "##vso[task.setvariable variable=AI_WORKER_URL]$AI_WORKER_URL"
+
+- template: templates/deploy-zagros-help.yml
+  parameters:
+    SshEndpoint: 'ai stage'
+    DeployDirectory: '$(RUNTIME_DIR)'
+    RagApiBase: '$(AI_WORKER_URL)'
