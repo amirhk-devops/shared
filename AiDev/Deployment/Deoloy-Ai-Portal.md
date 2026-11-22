@@ -1,55 +1,87 @@
-# راهنمای Pipeline: Deoloy-Ai-Portal
+# Deoloy-Ai-Portal Pipeline
 
-## هدف
+## Purpose
 
-این Pipeline نسخه اصلی سرویس‌های AI را از شاخه `master` Build می‌کند، Deployment Pack را تولید می‌کند و آن را برای استقرار محیط AI Portal روی سرور Deployment به کار می‌گیرد.
+Builds the AI deployment package and deploys the AI application to the **AI Portal runtime** in the Deployment environment. Like the standard AI deployment pipeline, it consumes service images published to Nexus rather than building those service images on the Deployment server.
 
-این Pipeline از فرآیند Build و بسته‌بندی مشترک موتور AI استفاده می‌کند؛ تفاوت اصلی آن با Pipelineِ `Deoloy-Ai` در مسیر مقصد است. در اینجا سرویس‌ها در مسیر مربوط به Portal نصب می‌شوند و نه مسیر اصلی AI.
+- Stage build server: `172.16.0.123`
+- Deployment server: `172.16.0.124`
+- Docker registry: `devops.chargoon.net:8083`
 
-## جریان کلی عملیات
+## High-level flow
 
-1. **Build نسخه انتشار**
-   - اجرای `Build-Ai-Template.yml` با شاخه `master`.
-   - دریافت کد Repository با نام `AiDev` از شاخه `master`.
-   - ساخت Imageهای Docker سرویس‌های AI شامل AI Worker، Message Bus، Referral، Synchronization و Control Panel.
+1. **Prepare deployment artifacts**
+   - Uses the configured source branch (currently `master`).
+   - Runs the shared AI build template with deployment-package generation enabled.
+   - Generates a deployment package containing the Compose definitions, configuration, scripts, and required initial directory structure.
 
-2. **تولید و انتشار Deployment Pack**
-   - تولید بسته نصب نسخه‌دار شامل فایل‌های Docker Compose، تنظیمات، اسکریپت‌های استقرار و فایل‌های اولیه Volumeها.
-   - ساخت Image مربوط به Deployment Pack.
-   - انتشار Imageهای سرویس‌ها و بسته نصب با Tag نسخه و `latest` در Registry.
+2. **Publish the deployment package**
+   - Publishes the generated package for the deployment stage.
+   - This package is separate from the service Docker images. It contains the files needed to prepare and operate the Portal deployment.
 
-3. **استقرار محیط AI Portal**
-   - اجرای Template مشترک `Deploy-AI-Template.yml`.
-   - دریافت اسکریپت Bootstrap از مسیر مشترک بسته نصب و اجرای آن.
-   - دریافت بسته از Registry و استخراج فایل‌های آن.
-   - اجرای فرآیند اصلی استقرار برای آماده‌سازی مسیر Portal، تنظیمات، Volumeها، شبکه و سرویس‌های Docker Compose.
+3. **Use the service images published to Nexus**
+   - Service images are built in the Stage environment by the build pipeline and pushed to `devops.chargoon.net:8083`.
+   - This pipeline deploys by pulling the required images from Nexus.
+   - The service image set includes:
+     - `ai/chargoon-ai-worker`
+     - `ai/message-bus-api`
+     - `ai/chargoon-ai-synchronization`
+     - `ai/chargoon-ai-referral`
+     - `ai/chargoon-ai-control-panel`
+   - The pipeline uses the image tags configured in its deployment process. The exact version-tag convention belongs to the pipeline and deployment scripts.
 
-## مسیرهای اصلی استقرار
+4. **Prepare the Portal deployment**
+   - Transfers and extracts the deployment package on `172.16.0.124`.
+   - Uses the deployment bootstrap and customer deployment scripts to prepare the Portal runtime and its Compose configuration.
+   - The package is extracted and its files are then used by the deployment process.
 
-| عنوان | مسیر |
-|---|---|
-| مسیر ریشه | `/opt/chargoon` |
-| مسیر محیط AI Portal | `/opt/chargoon/asa-portal` |
-| مسیر فایل‌ها و اسکریپت‌های استقرار | `/opt/chargoon/asa-portal-ai-deploy` |
-| مسیر مشترک بسته نصب | `/mnt/appcs-didgahinstallation/AI-Installation` |
+5. **Start or update Portal services**
+   - Pulls the required service images from Nexus.
+   - Starts or updates the AI Portal services through Docker Compose.
+   - The Deployment server runs the containers; it does not build the service images.
 
-## اجزای اصلی
+## Main deployment locations
 
-| جزء | مسئولیت |
-|---|---|
-| `Build-Ai-Template.yml` | دریافت کد، ساخت Imageها و تولید Deployment Pack |
-| `Deploy-AI-Template.yml` | اجرای فرآیند استقرار در مسیر Portal |
-| `deploy-ai-bootstrap.sh` | دریافت و استخراج بسته و شروع فرآیند استقرار |
-| `deploy-ai-for-customer.sh` | آماده‌سازی محیط و اجرای سرویس‌های AI |
+The pipeline and deployment scripts use the following locations:
 
-## خروجی نهایی
+- `/opt/chargoon`
+- `/opt/chargoon/asa-portal`
+- `/opt/chargoon/asa-portal-ai-deploy`
+- `/mnt/appcs-didgahinstallation/AI-Installation`
 
-سرویس‌های AI بر اساس نسخه `master` در مسیر اختصاصی AI Portal مستقر می‌شوند و Imageها و بسته انتشار نیز در Registry در دسترس قرار می‌گیرند.
+These locations serve different parts of the deployment and package workflow; their exact use is defined by the deployment scripts.
 
-## تفاوت با Deoloy-Ai
+## Image lifecycle
 
-مراحل Build، تولید بسته و روش استقرار در هر دو Pipeline مشترک است. تفاوت اصلی در مسیر مقصد است:
-- `Deoloy-Ai`: مسیر `/opt/chargoon/ai`
-- `Deoloy-Ai-Portal`: مسیر `/opt/chargoon/asa-portal`
+```text
+Build-Ai on Stage (172.16.0.123)
+      |
+      v
+Build, tag and push service images
+      |
+      v
+Nexus: devops.chargoon.net:8083
+      |
+      v
+Deoloy-Ai-Portal on Deployment (172.16.0.124)
+      |
+      +--> Pull service images
+      +--> Prepare and extract deployment package
+      +--> Start/update Portal Docker Compose services
+```
 
-این Pipeline مرحله انتشار ZagrosHelp و همگام‌سازی RAG را که در `Deoloy-Ai` وجود دارد اجرا نمی‌کند.
+## Difference from Deoloy-Ai
+
+Both deployment pipelines consume service images from Nexus and prepare a deployment package. Their target runtime and deployment locations differ:
+
+- **Deoloy-Ai:** deploys the standard AI environment.
+- **Deoloy-Ai-Portal:** deploys the AI services in the `asa-portal` environment.
+
+This Portal pipeline does not perform the separate ZagrosHelp/RAG documentation publishing stage described in the standard deployment pipeline.
+
+## Responsibility boundary
+
+- **Build-Ai:** builds and publishes service images.
+- **Nexus:** central image registry.
+- **Deoloy-Ai-Portal:** prepares the Portal deployment, pulls images, and runs the Portal services.
+- The Deployment server does not build the service images.

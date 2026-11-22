@@ -1,56 +1,83 @@
-# راهنمای Pipeline: Deoloy-Ai
+# Deoloy-Ai Pipeline
 
-## هدف
+## Purpose
 
-این Pipeline نسخه اصلی موتور هوش مصنوعی را از شاخه `master` می‌سازد، بسته استقرار قابل استفاده برای نصب یا به‌روزرسانی محیط را تولید می‌کند و سپس آن را روی مسیر اصلی AI در سرور Deployment اجرا می‌کند. پس از استقرار سرویس‌ها، مستندات ZagrosHelp نیز منتشر و RAG همگام‌سازی می‌شود.
+Builds a deployment package and deploys the AI application to the **Deployment environment**. The pipeline uses service images published to the internal Nexus Docker registry; it does not build the application service images on the Deployment server.
 
-## جریان کلی عملیات
+- Stage build server: `172.16.0.123`
+- Deployment server: `172.16.0.124`
+- Docker registry: `devops.chargoon.net:8083`
 
-1. **Build نسخه انتشار**
-   - اجرای `Build-Ai-Template.yml` با شاخه ثابت `master`.
-   - دریافت کد Repository با نام `AiDev` از شاخه `master`.
-   - ساخت Imageهای Docker مربوط به سرویس‌های AI شامل AI Worker، Message Bus، Referral، Synchronization و Control Panel.
+## High-level flow
 
-2. **تولید Deployment Pack**
-   - با فعال بودن گزینه `generatePack`، یک بسته نسخه‌دار بر اساس تاریخ Build تولید می‌شود.
-   - بسته شامل اسکریپت نصب مشتری، فایل‌های Docker Compose، فایل‌های نمونه تنظیمات و پیکربندی سرویس‌ها و فایل‌های اولیه موردنیاز Volumeها است.
-   - Image مربوط به بسته و Imageهای سرویس‌ها با Tag نسخه و `latest` در Registry منتشر می‌شوند.
-   - اسکریپت Bootstrap نیز در مسیر اشتراکی مورد استفاده فرآیند نصب قرار می‌گیرد.
+1. **Prepare the deployment artifacts**
+   - Uses the designated source branch (currently configured for `master`).
+   - Runs the shared AI build template in deployment-package generation mode.
+   - Produces a versioned deployment package containing deployment assets such as Compose definitions, configuration files, scripts, and required initial directory structure.
 
-3. **استقرار روی سرور Deployment**
-   - Template مشترک `Deploy-AI-Template.yml` اجرا می‌شود.
-   - اسکریپت Bootstrap از مسیر اشتراکی نصب دریافت و اجرا می‌شود.
-   - Bootstrap بسته انتشار را از Registry دریافت و محتویات آن را در مسیر Deployment استخراج می‌کند.
-   - سپس اسکریپت اصلی استقرار اجرا می‌شود تا فایل‌های Runtime، تنظیمات، Volumeها و شبکه موردنیاز آماده و Imageهای سرویس‌ها دریافت شوند.
-   - سرویس‌های تعریف‌شده در فایل‌های Docker Compose راه‌اندازی می‌شوند.
+2. **Publish the deployment package**
+   - Publishes the generated package as a separate deployment artifact.
+   - The package is not the same thing as the service Docker images. It carries the files required to prepare and operate the deployment.
 
-4. **انتشار مستندات و همگام‌سازی RAG**
-   - Repository مستندات ZagrosHelp از شاخه `master` دریافت می‌شود.
-   - مستندات به Volume مربوط به RAG در محیط AI منتقل می‌شوند؛ پوشه‌های `knowledgeBase` در این مرحله مستثنا هستند.
-   - فرآیند همگام‌سازی RAG از طریق API سرویس AI Worker اجرا می‌شود.
+3. **Make service images available**
+   - The service images are built by the Stage build process and published to Nexus.
+   - The Deployment process uses the registry as its image source and pulls the required images from `devops.chargoon.net:8083`.
+   - The service images include:
+     - `ai/chargoon-ai-worker`
+     - `ai/message-bus-api`
+     - `ai/chargoon-ai-synchronization`
+     - `ai/chargoon-ai-referral`
+     - `ai/chargoon-ai-control-panel`
+   - The deployment consumes the tags configured by the pipeline. The exact version-tag convention is defined by the pipeline and deployment scripts; `latest` is also published by the Stage image-publishing flow.
 
-## مسیرهای اصلی استقرار
+4. **Prepare the Deployment server**
+   - Transfers and extracts the deployment package on `172.16.0.124`.
+   - Uses the bootstrap and customer deployment scripts to prepare the runtime directory, configuration, and Compose deployment.
+   - The package is extracted before its deployment files are used.
 
-| عنوان | مسیر |
-|---|---|
-| مسیر اصلی AI | `/opt/chargoon/ai` |
-| فایل‌ها و اسکریپت‌های استقرار | `/opt/chargoon/ai-deploy` |
-| مسیر مشترک بسته نصب | `/mnt/appcs-didgahinstallation/AI-Installation` |
+5. **Start or update the AI services**
+   - Pulls the required service images from Nexus.
+   - Starts or updates the services through Docker Compose.
+   - The Deployment server runs the containers; it is not the image-build host.
 
-## اجزای اصلی
+6. **Publish and synchronize RAG documentation**
+   - Retrieves the required documentation source.
+   - Publishes the documentation to the AI runtime's RAG ingestion location.
+   - Triggers the RAG synchronization process so the deployed AI environment can ingest the updated content.
 
-| جزء | مسئولیت |
-|---|---|
-| `Build-Ai-Template.yml` | دریافت کد، ساخت Imageها و تولید Deployment Pack |
-| `Deploy-AI-Template.yml` | اجرای فرآیند استقرار روی سرور |
-| `deploy-ai-bootstrap.sh` | دریافت و استخراج بسته و فراخوانی اسکریپت اصلی |
-| `deploy-ai-for-customer.sh` | آماده‌سازی محیط، Imageها و اجرای سرویس‌های AI |
-| `deploy-zagros-help.yml` | انتشار مستندات و همگام‌سازی RAG |
+## Main deployment locations
 
-## خروجی نهایی
+The pipeline and its deployment scripts use the following locations as part of the deployment workflow:
 
-نسخه `master` موتور AI روی مسیر اصلی محیط Deployment نصب یا به‌روزرسانی می‌شود؛ Imageها و Deployment Pack نسخه‌دار در Registry قرار می‌گیرند و مستندات RAG نیز به‌روز می‌شوند.
+- `/opt/chargoon/ai`
+- `/opt/chargoon/ai-deploy`
+- `/mnt/appcs-didgahinstallation/AI-Installation`
 
-## تفاوت با Build-Ai
+The exact role of each directory is determined by the deployment scripts and package layout.
 
-Pipelineِ `Build-Ai` برای محیط Stage و بر اساس شاخه جاری اجرا می‌شود؛ اما این Pipeline همیشه از `master` استفاده می‌کند، Deployment Pack می‌سازد و روی محیط Deployment اصلی استقرار انجام می‌دهد.
+## Image lifecycle
+
+```text
+Build-Ai on Stage (172.16.0.123)
+      |
+      v
+Build, tag and push service images
+      |
+      v
+Nexus: devops.chargoon.net:8083
+      |
+      v
+Deoloy-Ai on Deployment (172.16.0.124)
+      |
+      +--> Pull service images
+      +--> Prepare deployment package
+      +--> Start/update Docker Compose services
+      +--> Update RAG documents
+```
+
+## Responsibility boundary
+
+- **Build-Ai:** builds and publishes service images.
+- **Nexus:** stores and distributes the published images.
+- **Deoloy-Ai:** prepares the deployment package, pulls the published images, and runs the AI services on the Deployment server.
+- The Deployment server does not compile or build the service images.
