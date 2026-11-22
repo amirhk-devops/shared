@@ -1,87 +1,48 @@
-# Deoloy-Ai-Portal Pipeline
+# پایپ‌لاین Deoloy-Ai-Portal
 
-## Purpose
+## هدف
+ساخت بسته استقرار نسخه اصلی AI Portal و نصب/به‌روزرسانی آن روی سرور Deployment در مسیرهای مربوط به Portal. این پایپ‌لاین از خروجی Build استفاده می‌کند و مسئول Build ایمیج‌های سرویس‌ها روی سرور مقصد نیست.
 
-Builds the AI deployment package and deploys the AI application to the **AI Portal runtime** in the Deployment environment. Like the standard AI deployment pipeline, it consumes service images published to Nexus rather than building those service images on the Deployment server.
+## معماری اجرا
+- **Stage و محل ساخت ایمیج‌ها:** `172.16.0.123`
+- **Registry مرکزی:** `devops.chargoon.net:8083`
+- **سرور Deployment:** `172.16.0.124`
 
-- Stage build server: `172.16.0.123`
-- Deployment server: `172.16.0.124`
-- Docker registry: `devops.chargoon.net:8083`
+## مراحل اصلی
+1. اجرای Build از شاخه `master` و تولید Deployment Pack.
+2. آماده‌سازی بسته شامل فایل‌های Compose، تنظیمات، اسکریپت‌ها و ساختار اولیه Volumeها.
+3. انتشار Deployment Pack به‌عنوان یک Artifact مستقل برای انتقال به سرور مقصد. ایمیج‌های Docker سرویس‌ها به‌صورت جداگانه در مرحله Build روی Stage ساخته و با تگ نسخه/شاخه و همچنین `latest` در Nexus منتشر می‌شوند.
+4. انتقال و استخراج بسته روی سرور Deployment.
+5. دریافت ایمیج‌های موردنیاز از Nexus با تگ مورد انتظار استقرار؛ این تگ باید با یکی از تگ‌های منتشرشده در مرحله Build، مانند تگ نسخه/شاخه یا `latest`، مطابقت داشته باشد.
+6. آماده‌سازی فایل‌ها و تنظیمات Portal و راه‌اندازی سرویس‌ها با Docker Compose.
 
-## High-level flow
+## مسیرهای مهم
+- مسیر پایه: `/opt/chargoon`
+- مسیر Portal: `/opt/chargoon/asa-portal`
+- مسیر فایل‌های استقرار Portal: `/opt/chargoon/asa-portal-ai-deploy`
+- مسیر بسته نصب: `/mnt/appcs-didgahinstallation/AI-Installation`
 
-1. **Prepare deployment artifacts**
-   - Uses the configured source branch (currently `master`).
-   - Runs the shared AI build template with deployment-package generation enabled.
-   - Generates a deployment package containing the Compose definitions, configuration, scripts, and required initial directory structure.
+## محدوده مسئولیت
+این پایپ‌لاین استقرار AI Portal را انجام می‌دهد. برخلاف پایپ‌لاین به‌روزرسانی دانش، وظیفه اصلی آن تغییر محتوای RAG نیست؛ همچنین برخلاف پایپ‌لاین Build، ایمیج‌های سرویس را روی سرور Deployment نمی‌سازد، بلکه آن‌ها را از Nexus دریافت و اجرا می‌کند.
 
-2. **Publish the deployment package**
-   - Publishes the generated package for the deployment stage.
-   - This package is separate from the service Docker images. It contains the files needed to prepare and operate the Portal deployment.
-
-3. **Use the service images published to Nexus**
-   - Service images are built in the Stage environment by the build pipeline and pushed to `devops.chargoon.net:8083`.
-   - This pipeline deploys by pulling the required images from Nexus.
-   - The service image set includes:
-     - `ai/chargoon-ai-worker`
-     - `ai/message-bus-api`
-     - `ai/chargoon-ai-synchronization`
-     - `ai/chargoon-ai-referral`
-     - `ai/chargoon-ai-control-panel`
-   - The pipeline uses the image tags configured in its deployment process. The exact version-tag convention belongs to the pipeline and deployment scripts.
-
-4. **Prepare the Portal deployment**
-   - Transfers and extracts the deployment package on `172.16.0.124`.
-   - Uses the deployment bootstrap and customer deployment scripts to prepare the Portal runtime and its Compose configuration.
-   - The package is extracted and its files are then used by the deployment process.
-
-5. **Start or update Portal services**
-   - Pulls the required service images from Nexus.
-   - Starts or updates the AI Portal services through Docker Compose.
-   - The Deployment server runs the containers; it does not build the service images.
-
-## Main deployment locations
-
-The pipeline and deployment scripts use the following locations:
-
-- `/opt/chargoon`
-- `/opt/chargoon/asa-portal`
-- `/opt/chargoon/asa-portal-ai-deploy`
-- `/mnt/appcs-didgahinstallation/AI-Installation`
-
-These locations serve different parts of the deployment and package workflow; their exact use is defined by the deployment scripts.
-
-## Image lifecycle
-
+## چرخه دریافت و اجرای ایمیج‌ها
 ```text
-Build-Ai on Stage (172.16.0.123)
-      |
-      v
-Build, tag and push service images
-      |
-      v
-Nexus: devops.chargoon.net:8083
-      |
-      v
-Deoloy-Ai-Portal on Deployment (172.16.0.124)
-      |
-      +--> Pull service images
-      +--> Prepare and extract deployment package
-      +--> Start/update Portal Docker Compose services
+Build-Ai
+Stage (172.16.0.123)
+    |
+    | Build و Tag ایمیج‌ها با تگ نسخه/شاخه و latest
+    | Push
+    v
+Nexus (devops.chargoon.net:8083)
+    |
+    | Pull ایمیج با تگ مورد انتظار استقرار
+    v
+Deoloy-Ai-Portal
+Deployment (172.16.0.124)
+    |
+    | اجرای ایمیج دریافت‌شده
+    v
+AI Portal / Docker Compose
 ```
 
-## Difference from Deoloy-Ai
-
-Both deployment pipelines consume service images from Nexus and prepare a deployment package. Their target runtime and deployment locations differ:
-
-- **Deoloy-Ai:** deploys the standard AI environment.
-- **Deoloy-Ai-Portal:** deploys the AI services in the `asa-portal` environment.
-
-This Portal pipeline does not perform the separate ZagrosHelp/RAG documentation publishing stage described in the standard deployment pipeline.
-
-## Responsibility boundary
-
-- **Build-Ai:** builds and publishes service images.
-- **Nexus:** central image registry.
-- **Deoloy-Ai-Portal:** prepares the Portal deployment, pulls images, and runs the Portal services.
-- The Deployment server does not build the service images.
+Stage محل ساخت و انتشار ایمیج‌هاست و Nexus آن‌ها را برای مصرف محیط‌های دیگر نگهداری می‌کند. این پایپ‌لاین روی سرور Deployment ایمیج‌ها را از Nexus دریافت می‌کند و آن‌ها را در محیط AI Portal اجرا یا به‌روزرسانی می‌کند؛ بنابراین روی سرور مقصد Build مجدد انجام نمی‌شود.

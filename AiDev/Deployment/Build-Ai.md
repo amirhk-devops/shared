@@ -1,69 +1,27 @@
-# Build-Ai Pipeline
+# پایپ‌لاین Build-Ai
 
-## Purpose
+## هدف
+ساخت و به‌روزرسانی محیط Stage هوش مصنوعی. این پایپ‌لاین کدهای شاخه موردنظر را دریافت می‌کند، ایمیج‌های سرویس‌ها را می‌سازد و آن‌ها را در Registry مرکزی Nexus منتشر می‌کند؛ سپس نسخه ساخته‌شده را در محیط Stage اجرا یا به‌روزرسانی می‌کند.
 
-Builds the AI application images in the **Stage environment**, publishes the resulting service images to the internal Nexus Docker registry, and deploys the built version to the Stage runtime.
+## معماری اجرا
+- **سرور Stage:** `172.16.0.123`
+- **Registry مرکزی:** `devops.chargoon.net:8083`
+- **سرور Deployment:** `172.16.0.124`؛ مقصد این پایپ‌لاین نیست و ایمیج‌های منتشرشده را پایپ‌لاین‌های استقرار از Nexus دریافت می‌کنند.
 
-- Stage server: `172.16.0.123`
-- Docker registry: `devops.chargoon.net:8083`
+## مراحل اصلی
+1. دریافت سورس پروژه AI از شاخه تعیین‌شده در پایپ‌لاین.
+2. ساخت ایمیج‌های سرویس‌های موردنیاز:
+   - `ai/chargoon-ai-worker`
+   - `ai/message-bus-api`
+   - `ai/chargoon-ai-synchronization`
+   - `ai/chargoon-ai-referral`
+   - `ai/chargoon-ai-control-panel`
+3. برچسب‌گذاری ایمیج‌ها با تگ نسخه/شاخه مورد استفاده در فرایند و همچنین تگ `latest`.
+4. انتشار ایمیج‌های ساخته‌شده در Nexus تا سرورهای مقصد بتوانند آن‌ها را دریافت کنند.
+5. به‌روزرسانی و اجرای سرویس‌های محیط Stage با استفاده از ایمیج‌های ساخته‌شده.
+6. دریافت مستندات پروژه `ZagrosHelp` و انتقال محتوای موردنیاز به فضای ورودی RAG در Stage؛ سپس اجرای فرایند همگام‌سازی دانش، در صورت فعال بودن این بخش در تنظیمات پایپ‌لاین.
 
-This pipeline is the build-and-publish path. It is not the customer deployment pipeline.
+## نکته معماری
+Nexus محل نگهداری و توزیع ایمیج‌هاست، نه محل اجرای کانتینرها. ساخت ایمیج در Stage انجام می‌شود؛ اجرای همان ایمیج‌ها روی سرورهای مقصد انجام خواهد شد. جزئیات دقیق الگوی تگ نسخه باید از تنظیمات و اسکریپت‌های جاری استخراج شود و در این سند به‌صورت قراردادی کلی بیان شده است.
 
-## High-level flow
-
-1. **Get source code**
-   - Retrieves the AI application source from the branch selected for the pipeline run.
-   - Retrieves the documentation source used by the RAG knowledge-base update.
-
-2. **Build service images on Stage**
-   - Builds the Docker images for the AI services from the selected source revision.
-   - The service image set includes:
-     - `ai/chargoon-ai-worker`
-     - `ai/message-bus-api`
-     - `ai/chargoon-ai-synchronization`
-     - `ai/chargoon-ai-referral`
-     - `ai/chargoon-ai-control-panel`
-
-3. **Tag and publish images to Nexus**
-   - Applies the pipeline's version-specific tags to the newly built images.
-   - Also applies the `latest` tag.
-   - Pushes the tagged service images to the central Nexus Docker registry at `devops.chargoon.net:8083`.
-   - Nexus is the shared image distribution point; it is separate from both the Stage runtime and the Deployment server.
-
-4. **Deploy the build to Stage**
-   - Deploys the selected build to the Stage runtime using the Stage deployment script.
-   - Starts or updates the relevant Compose services so the Stage environment runs the built images.
-
-5. **Update the Stage RAG documents**
-   - Retrieves the required documentation from the documentation repository.
-   - Copies the applicable documentation into the RAG ingestion area, excluding the separately managed `knowledgeBase` content where applicable to this pipeline.
-   - Triggers the RAG synchronization process.
-
-## Image lifecycle
-
-```text
-AI source branch
-      |
-      v
-Build images on Stage (172.16.0.123)
-      |
-      v
-Apply version tags and latest
-      |
-      v
-Push service images to Nexus
-(devops.chargoon.net:8083)
-      |
-      +------> Stage deployment runs the selected build
-      |
-      +------> Deployment pipelines can pull published images
-```
-
-The service images and the deployment package are different artifacts. Service images contain the runnable application services. The deployment package is used by the customer deployment process to distribute Compose files, configuration, scripts, and initial directory structure.
-
-## Responsibility boundary
-
-- **Build-Ai:** source retrieval, service image build, image tagging, publication to Nexus, Stage deployment, and Stage RAG document update.
-- **Nexus:** central storage and distribution of published Docker images.
-- **Deploy-Ai / Deploy-Ai-Portal:** consume images from Nexus and deploy them to their respective Deployment-server locations.
-- **Update-knowledgeBase-Portal:** updates the Portal RAG documents without rebuilding or publishing service images.
+در این چرخه، Stage نقش محیط Build و انتشار را دارد: پس از دریافت کد و ساخت ایمیج‌ها، هر ایمیج با تگ نسخه/شاخه و همچنین `latest` برچسب‌گذاری و به Nexus در آدرس `devops.chargoon.net:8083` Push می‌شود. به این ترتیب نسخه ساخته‌شده در یک مخزن مرکزی در دسترس پایپ‌لاین‌های استقرار قرار می‌گیرد. سرور Deployment ایمیج را از روی سورس نمی‌سازد؛ بلکه ایمیج منتشرشده را با تگ مورد انتظار فرایند استقرار از Nexus Pull می‌کند و اجرا می‌کند. تگ نسخه امکان اشاره به یک خروجی مشخص را می‌دهد و `latest` نیز یک شناسه متحرک برای آخرین خروجی منتشرشده است.
